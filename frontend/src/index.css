@@ -1,0 +1,140 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/*
+ * FINGuard visual identity: a dark financial-intelligence surface.
+ * Restrained colour, thin borders, generous whitespace, monospaced numerals.
+ * Purple appears only on AI surfaces; red only on genuine criticality.
+ */
+
+@layer base {
+  :root {
+    color-scheme: dark;
+    --ring: 56 189 248;
+  }
+
+  * {
+    @apply border-line;
+  }
+
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+
+  body {
+    @apply bg-void text-ink antialiased;
+    font-feature-settings: 'cv02', 'cv03', 'cv04', 'ss01';
+    text-rendering: optimizeLegibility;
+  }
+
+  /* Tabular numerals everywhere numbers matter. */
+  .tnum {
+    font-variant-numeric: tabular-nums;
+    font-feature-settings: 'tnum';
+  }
+
+  ::selection {
+    @apply bg-info/25 text-ink;
+  }
+
+  ::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+  ::-webkit-scrollbar-track {
+    @apply bg-transparent;
+  }
+  ::-webkit-scrollbar-thumb {
+    @apply rounded-full bg-line-strong;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    @apply bg-faint;
+  }
+
+  :focus-visible {
+    @apply outline-none ring-2 ring-info/70 ring-offset-2 ring-offset-void;
+  }
+
+  /* Respect the user's motion preference across every animation. */
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+      animation-duration: 0.001ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.001ms !important;
+      scroll-behavior: auto !important;
+    }
+  }
+}
+
+@layer components {
+  .panel {
+    @apply rounded-xl border border-line bg-panel/80 shadow-panel backdrop-blur-sm;
+  }
+
+  .panel-flat {
+    @apply rounded-xl border border-line bg-surface;
+  }
+
+  .glass {
+    @apply border border-white/[0.06] bg-white/[0.03] backdrop-blur-xl;
+  }
+
+  .grid-bg {
+    @apply bg-grid bg-grid;
+  }
+
+  .label {
+    @apply text-2xs font-medium uppercase tracking-[0.14em] text-faint;
+  }
+
+  .metric {
+    @apply tnum text-[28px] font-semibold leading-none tracking-tight text-ink;
+  }
+
+  .cell {
+    @apply px-3 py-2.5 text-sm;
+  }
+
+  .link {
+    @apply text-info transition-colors hover:text-info/80;
+  }
+
+  .skeleton {
+    @apply relative overflow-hidden rounded bg-raised/70;
+  }
+  .skeleton::after {
+    content: '';
+    @apply absolute inset-0 -translate-x-full animate-shimmer bg-gradient-to-r from-transparent via-white/[0.05] to-transparent;
+  }
+
+  /* Risk band colour system, used by badges, orbs, rows and charts alike. */
+  .risk-low {
+    @apply text-positive;
+  }
+  .risk-medium {
+    @apply text-warning;
+  }
+  .risk-high {
+    @apply text-high;
+  }
+  .risk-critical {
+    @apply text-critical;
+  }
+}
+
+@layer utilities {
+  .text-balance {
+    text-wrap: balance;
+  }
+  .scrollbar-none {
+    scrollbar-width: none;
+  }
+  .scrollbar-none::-webkit-scrollbar {
+    display: none;
+  }
+}

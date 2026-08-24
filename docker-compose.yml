@@ -1,0 +1,217 @@
+# FINGuard local stack.
+#
+# Profiles keep the default developer experience light:
+#
+#   docker compose --profile core up        # api + web + postgres + redis
+#   docker compose --profile streaming up   # adds Kafka (KRaft, no ZooKeeper)
+#   docker compose --profile ml up          # adds MLflow + MinIO
+#   docker compose --profile graph up       # adds Neo4j
+#   docker compose --profile orchestration up  # adds Airflow
+#
+# Profiles compose: `--profile core --profile streaming` runs both.
+
+name: finguard
+
+x-api-env: &api-env
+  DATABASE_URL: postgresql+psycopg2://finguard:${POSTGRES_PASSWORD:-finguard}@postgres:5432/finguard
+  REDIS_URL: redis://redis:6379/0
+  ENVIRONMENT: ${ENVIRONMENT:-development}
+  PLATFORM_MODE: ${PLATFORM_MODE:-demo}
+  DEBUG: ${DEBUG:-true}
+  JWT_SECRET: ${JWT_SECRET:-dev-insecure-secret-change-me}
+  CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:5173,http://localhost:8080}
+  LLM_PROVIDER: ${LLM_PROVIDER:-none}
+  LLM_API_KEY: ${LLM_API_KEY:-}
+  LLM_BASE_URL: ${LLM_BASE_URL:-}
+  LLM_MODEL: ${LLM_MODEL:-gpt-4o-mini}
+
+services:
+  # ------------------------------------------------------------------ core
+  postgres:
+    image: postgres:16-alpine
+    profiles: [core, streaming, ml, graph, orchestration]
+    environment:
+      POSTGRES_USER: finguard
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-finguard}
+      POSTGRES_DB: finguard
+    ports: ['5432:5432']
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U finguard -d finguard']
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    profiles: [core, streaming, ml, graph, orchestration]
+    command: ['redis-server', '--appendonly', 'yes', '--maxmemory', '256mb', '--maxmemory-policy', 'allkeys-lru']
+    ports: ['6379:6379']
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  api:
+    build:
+      context: ./backend
+    profiles: [core, streaming, ml, graph, orchestration]
+    environment:
+      <<: *api-env
+      KAFKA_BROKERS: ${KAFKA_BROKERS:-}
+      MLFLOW_TRACKING_URI: ${MLFLOW_TRACKING_URI:-}
+      NEO4J_URI: ${NEO4J_URI:-}
+    ports: ['8000:8000']
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis: { condition: service_healthy }
+    volumes:
+      - model-artifacts:/app/artifacts
+    # Migrate, then serve. Seeding is a separate one-shot service below.
+    command: >
+      sh -c "alembic upgrade head &&
+             uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 2"
+    restart: unless-stopped
+
+  seed:
+    build:
+      context: ./backend
+    profiles: [core, streaming, ml, graph, orchestration]
+    environment:
+      <<: *api-env
+    depends_on:
+      postgres: { condition: service_healthy }
+    volumes:
+      - model-artifacts:/app/artifacts
+    # One-shot: builds the synthetic portfolio and trains the first models.
+    command: sh -c "alembic upgrade head && python -m app.datagen.seed"
+    restart: 'no'
+
+  web:
+    build:
+      context: ./frontend
+      args:
+        VITE_API_URL: /api/v1
+    profiles: [core, streaming, ml, graph, orchestration]
+    ports: ['8080:80']
+    depends_on: [api]
+    restart: unless-stopped
+
+  # ------------------------------------------------------------- streaming
+  kafka:
+    image: bitnami/kafka:3.7
+    profiles: [streaming]
+    environment:
+      # KRaft mode: no ZooKeeper required.
+      KAFKA_CFG_NODE_ID: '1'
+      KAFKA_CFG_PROCESS_ROLES: controller,broker
+      KAFKA_CFG_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_CFG_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093
+      KAFKA_CFG_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+      KAFKA_CFG_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT
+      KAFKA_CFG_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_CFG_AUTO_CREATE_TOPICS_ENABLE: 'true'
+      ALLOW_PLAINTEXT_LISTENER: 'yes'
+    ports: ['9092:9092']
+    volumes:
+      - kafka-data:/bitnami/kafka
+    healthcheck:
+      test: ['CMD-SHELL', 'kafka-topics.sh --bootstrap-server localhost:9092 --list || exit 1']
+      interval: 15s
+      timeout: 10s
+      retries: 10
+
+  kafka-init:
+    image: bitnami/kafka:3.7
+    profiles: [streaming]
+    depends_on:
+      kafka: { condition: service_healthy }
+    entrypoint: ['/bin/bash', '-c']
+    command: |
+      "for topic in transactions.raw transactions.validated transactions.enriched \
+                    fraud.predictions risk.events alerts.created cases.created \
+                    analyst.feedback model.events system.events; do
+         kafka-topics.sh --bootstrap-server kafka:9092 --create --if-not-exists \
+           --topic $$topic --partitions 3 --replication-factor 1
+         kafka-topics.sh --bootstrap-server kafka:9092 --create --if-not-exists \
+           --topic $$topic.dlq --partitions 1 --replication-factor 1
+       done
+       kafka-topics.sh --bootstrap-server kafka:9092 --list"
+    restart: 'no'
+
+  # -------------------------------------------------------------------- ml
+  mlflow:
+    image: ghcr.io/mlflow/mlflow:v2.16.2
+    profiles: [ml]
+    ports: ['5000:5000']
+    environment:
+      MLFLOW_S3_ENDPOINT_URL: http://minio:9000
+      AWS_ACCESS_KEY_ID: ${S3_ACCESS_KEY:-finguard}
+      AWS_SECRET_ACCESS_KEY: ${S3_SECRET_KEY:-finguard-secret}
+    depends_on:
+      postgres: { condition: service_healthy }
+    command: >
+      mlflow server --host 0.0.0.0 --port 5000
+      --backend-store-uri postgresql+psycopg2://finguard:${POSTGRES_PASSWORD:-finguard}@postgres:5432/finguard
+      --default-artifact-root s3://finguard/mlflow
+
+  minio:
+    image: minio/minio:RELEASE.2024-09-13T20-26-02Z
+    profiles: [ml]
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${S3_ACCESS_KEY:-finguard}
+      MINIO_ROOT_PASSWORD: ${S3_SECRET_KEY:-finguard-secret}
+    ports: ['9000:9000', '9001:9001']
+    volumes:
+      - minio-data:/data
+    healthcheck:
+      test: ['CMD', 'mc', 'ready', 'local']
+      interval: 15s
+      timeout: 5s
+      retries: 5
+
+  # ----------------------------------------------------------------- graph
+  neo4j:
+    image: neo4j:5-community
+    profiles: [graph]
+    environment:
+      NEO4J_AUTH: neo4j/${NEO4J_PASSWORD:-finguard-graph}
+      NEO4J_server_memory_heap_max__size: 1G
+    ports: ['7474:7474', '7687:7687']
+    volumes:
+      - neo4j-data:/data
+
+  # --------------------------------------------------------- orchestration
+  airflow:
+    image: apache/airflow:2.10.2-python3.12
+    profiles: [orchestration]
+    environment:
+      AIRFLOW__CORE__EXECUTOR: LocalExecutor
+      AIRFLOW__CORE__LOAD_EXAMPLES: 'false'
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://finguard:${POSTGRES_PASSWORD:-finguard}@postgres:5432/finguard
+      FINGUARD_API_URL: http://api:8000
+      FINGUARD_API_EMAIL: ${AIRFLOW_API_EMAIL:-engineer@finguard.io}
+      FINGUARD_API_PASSWORD: ${AIRFLOW_API_PASSWORD:-FinGuard#2026}
+    ports: ['8081:8080']
+    depends_on:
+      postgres: { condition: service_healthy }
+    volumes:
+      - ./infra/airflow/dags:/opt/airflow/dags
+    command: >
+      bash -c "airflow db migrate &&
+               airflow users create --username admin --password admin
+                 --firstname FIN --lastname Guard --role Admin --email admin@finguard.io || true &&
+               airflow standalone"
+
+volumes:
+  postgres-data:
+  redis-data:
+  kafka-data:
+  minio-data:
+  neo4j-data:
+  model-artifacts:

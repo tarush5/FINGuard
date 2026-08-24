@@ -1,0 +1,8 @@
+-r requirements.txt
+-r requirements-mlflow.txt
+
+pytest==9.1.1
+pytest-cov==7.0.0
+ruff==0.6.9
+black==24.8.0
+mypy==1.11.2

@@ -1,0 +1,51 @@
+version: 2
+
+sources:
+  - name: finguard
+    description: Tables written by the FINGuard application.
+    schema: public
+    tables:
+      - name: transactions
+        description: One row per scored transaction.
+        columns:
+          - name: id
+            tests: [unique, not_null]
+          - name: event_id
+            description: Producer-supplied idempotency key.
+            tests: [unique, not_null]
+          - name: customer_id
+            tests:
+              - not_null
+              - relationships: { to: source('finguard', 'customers'), field: id }
+          - name: amount
+            tests:
+              - not_null
+              - dbt_utils.accepted_range: { min_value: 0, inclusive: false }
+          - name: decision
+            tests:
+              - accepted_values:
+                  values: ['APPROVE', 'STEP_UP', 'MANUAL_REVIEW', 'DECLINE', 'PENDING']
+      - name: customers
+        columns:
+          - name: id
+            tests: [unique, not_null]
+      - name: merchants
+        columns:
+          - name: id
+            tests: [unique, not_null]
+          - name: fraud_rate
+            tests:
+              - dbt_utils.accepted_range: { min_value: 0, max_value: 1 }
+      - name: transaction_features
+      - name: risk_scores
+      - name: decisions
+      - name: cases
+
+models:
+  - name: stg_transactions
+    description: Cleaned transaction grain with derived time parts.
+    columns:
+      - name: transaction_id
+        tests: [unique, not_null]
+  - name: stg_customers
+  - name: stg_merchants

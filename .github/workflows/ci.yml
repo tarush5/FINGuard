@@ -1,0 +1,233 @@
+name: CI
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main, develop]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PYTHON_VERSION: '3.12'
+  NODE_VERSION: '22'
+
+jobs:
+  backend-quality:
+    name: Backend · lint & type check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: backend/requirements-dev.txt
+      - name: Install dependencies
+        working-directory: backend
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-dev.txt
+      - name: Ruff
+        working-directory: backend
+        run: ruff check app tests scripts
+      - name: Black
+        working-directory: backend
+        run: black --check app tests
+      - name: MyPy (advisory)
+        working-directory: backend
+        run: mypy app --ignore-missing-imports --no-strict-optional || true
+
+  backend-tests:
+    name: Backend · tests
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: finguard
+          POSTGRES_PASSWORD: finguard
+          POSTGRES_DB: finguard_test
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U finguard"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+      redis:
+        image: redis:7-alpine
+        ports: ['6379:6379']
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: backend/requirements-dev.txt
+      - name: Install dependencies
+        working-directory: backend
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-dev.txt
+
+      - name: Verify migrations apply to PostgreSQL
+        working-directory: backend
+        env:
+          DATABASE_URL: postgresql+psycopg2://finguard:finguard@localhost:5432/finguard_test
+          JWT_SECRET: ci-secret-key-that-is-long-enough-for-the-suite-01234
+        run: |
+          alembic upgrade head
+          alembic downgrade base
+          alembic upgrade head
+
+      - name: Unit and integration tests
+        working-directory: backend
+        env:
+          # The suite seeds its own throwaway SQLite database (see conftest).
+          JWT_SECRET: ci-secret-key-that-is-long-enough-for-the-suite-01234
+          REDIS_URL: redis://localhost:6379/0
+        run: pytest tests -q --cov=app --cov-report=term-missing --cov-report=xml
+
+      - name: Seed and smoke-test the API
+        working-directory: backend
+        env:
+          DATABASE_URL: postgresql+psycopg2://finguard:finguard@localhost:5432/finguard_test
+          REDIS_URL: redis://localhost:6379/0
+          JWT_SECRET: ci-secret-key-that-is-long-enough-for-the-suite-01234
+        run: |
+          python -m app.datagen.seed --reset --customers 200 --merchants 40 --transactions 4000 --days 45
+          python -m scripts.smoke
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: backend-coverage
+          path: backend/coverage.xml
+          retention-days: 7
+
+  frontend:
+    name: Frontend · lint, types, tests, build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Install
+        working-directory: frontend
+        run: npm ci
+      - name: Lint
+        working-directory: frontend
+        run: npm run lint
+      - name: Type check
+        working-directory: frontend
+        run: npm run typecheck
+      - name: Tests
+        working-directory: frontend
+        run: npm run test
+      - name: Build
+        working-directory: frontend
+        run: npm run build
+      - uses: actions/upload-artifact@v4
+        with:
+          name: web-dist
+          path: frontend/dist
+          retention-days: 7
+
+  security:
+    name: Security scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - name: Python dependency audit
+        working-directory: backend
+        run: |
+          python -m pip install --upgrade pip pip-audit
+          # Advisory: a new CVE in a transitive dependency must not block a PR,
+          # but it is surfaced in the log for triage.
+          pip-audit -r requirements.txt --progress-spinner off || true
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+      - name: npm audit
+        working-directory: frontend
+        run: npm audit --audit-level=high || true
+      - name: Fail if a secret-looking value is committed
+        run: |
+          # .env must never be committed, and no obvious key material either.
+          if git ls-files | grep -E '(^|/)\.env$'; then
+            echo "::error::.env is committed"; exit 1
+          fi
+          if git grep -nE '(sk-[A-Za-z0-9]{20,}|AKIA[0-9A-Z]{16}|-----BEGIN (RSA|OPENSSH) PRIVATE KEY-----)' -- . ':!*.example' ':!*.md'; then
+            echo "::error::possible secret committed"; exit 1
+          fi
+          echo "no obvious secrets found"
+
+  docker:
+    name: Docker images build
+    runs-on: ubuntu-latest
+    needs: [backend-tests, frontend]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: Build API image
+        uses: docker/build-push-action@v6
+        with:
+          context: ./backend
+          push: false
+          load: true
+          tags: finguard-api:${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: Build web image
+        uses: docker/build-push-action@v6
+        with:
+          context: ./frontend
+          push: false
+          load: true
+          tags: finguard-web:${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: Smoke-test the API image
+        run: |
+          docker run -d --name api -p 8000:8000 \
+            -e DATABASE_URL=sqlite:////tmp/ci.db \
+            -e JWT_SECRET=ci-secret-key-that-is-long-enough-01234567890 \
+            finguard-api:${{ github.sha }} \
+            uvicorn app.main:app --host 0.0.0.0 --port 8000
+          for i in $(seq 1 30); do
+            if curl -fsS http://localhost:8000/health; then echo " healthy"; exit 0; fi
+            sleep 2
+          done
+          docker logs api
+          exit 1
+
+  deploy:
+    name: Deploy
+    runs-on: ubuntu-latest
+    needs: [docker, security]
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+      - name: Deployment placeholder
+        run: |
+          # Wire this to your registry and platform, for example:
+          #   aws ecr get-login-password | docker login --username AWS --password-stdin $ECR
+          #   docker push $ECR/finguard-api:${{ github.sha }}
+          #   aws ecs update-service --cluster finguard --service api --force-new-deployment
+          # See docs/deployment.md for the full runbook.
+          echo "Images built and verified for ${{ github.sha }}."

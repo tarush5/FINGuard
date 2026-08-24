@@ -1,0 +1,93 @@
+# Render blueprint for the FINGuard API and its data services.
+#
+# Deploy: Render dashboard -> New -> Blueprint -> pick this repository.
+# Everything below is provisioned automatically except CORS_ORIGINS, which must
+# be set to the Vercel URL once the frontend exists (see docs/deployment.md).
+
+services:
+  # --------------------------------------------------------------- API
+  - type: web
+    name: finguard-api
+    runtime: python
+    plan: free # upgrade to starter for always-on and a shell
+    region: oregon
+    rootDir: backend
+    buildCommand: pip install --upgrade pip && pip install -r requirements.txt
+    # Migrations and (first-boot only) seeding run before the server starts.
+    startCommand: python -m scripts.bootstrap && uvicorn app.main:app --host 0.0.0.0 --port $PORT --workers 1
+    healthCheckPath: /health
+    autoDeploy: true
+    envVars:
+      - key: PYTHON_VERSION
+        value: '3.12.7'
+
+      # ---- runtime -------------------------------------------------------
+      - key: ENVIRONMENT
+        value: production
+      - key: DEBUG
+        value: 'false'
+      - key: PLATFORM_MODE
+        value: demo # synthetic data; the label stays visible in the UI
+
+      # ---- security ------------------------------------------------------
+      - key: JWT_SECRET
+        generateValue: true # Render generates a long random value
+      - key: ACCESS_TOKEN_TTL_MINUTES
+        value: '30'
+      - key: MASK_PII
+        value: 'true'
+      # Set to the deployed Vercel origin (comma separated to allow previews).
+      - key: CORS_ORIGINS
+        sync: false
+
+      # ---- data services -------------------------------------------------
+      - key: DATABASE_URL
+        fromDatabase:
+          name: finguard-db
+          property: connectionString
+      - key: REDIS_URL
+        fromService:
+          type: keyvalue
+          name: finguard-cache
+          property: connectionString
+
+      # ---- first-boot demo data -----------------------------------------
+      # Sized for a 512 MB free instance. Seeding is skipped on every restart
+      # once the database holds transactions.
+      - key: SEED_ON_STARTUP
+        value: 'true'
+      - key: SEED_CUSTOMERS
+        value: '250'
+      - key: SEED_MERCHANTS
+        value: '40'
+      - key: SEED_TRANSACTIONS
+        value: '6000'
+
+      # ---- optional integrations ----------------------------------------
+      # Blank keeps the in-process event bus and deterministic AI narration.
+      - key: KAFKA_BROKERS
+        value: ''
+      - key: MLFLOW_TRACKING_URI
+        value: ''
+      - key: LLM_PROVIDER
+        value: none
+      - key: LLM_API_KEY
+        sync: false # set in the dashboard only if you enable an LLM
+
+  # ------------------------------------------------------- cache (Redis API)
+  # Backs rate limiting, idempotency claims and hot analytics. The application
+  # falls back to an in-process cache if this is unreachable, so it is an
+  # optimisation rather than a hard dependency.
+  - type: keyvalue
+    name: finguard-cache
+    plan: free
+    region: oregon
+    maxmemoryPolicy: allkeys-lru
+    ipAllowList: [] # internal access only
+
+databases:
+  - name: finguard-db
+    plan: free # 1 GB; the free tier expires after 30 days
+    region: oregon
+    databaseName: finguard
+    user: finguard

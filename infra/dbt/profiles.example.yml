@@ -1,0 +1,13 @@
+# Copy to ~/.dbt/profiles.yml (or set DBT_PROFILES_DIR) and fill in.
+finguard:
+  target: dev
+  outputs:
+    dev:
+      type: postgres
+      host: "{{ env_var('POSTGRES_HOST', 'localhost') }}"
+      port: 5432
+      user: "{{ env_var('POSTGRES_USER', 'finguard') }}"
+      password: "{{ env_var('POSTGRES_PASSWORD', 'finguard') }}"
+      dbname: finguard
+      schema: analytics
+      threads: 4

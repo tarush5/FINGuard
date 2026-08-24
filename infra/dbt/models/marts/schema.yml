@@ -1,0 +1,35 @@
+version: 2
+
+models:
+  - name: fct_daily_risk
+    description: One row per day with volume, fraud, decision mix and outcome quality.
+    columns:
+      - name: occurred_date
+        tests: [unique, not_null]
+      - name: fraud_rate_pct
+        tests:
+          - dbt_utils.accepted_range: { min_value: 0, max_value: 100 }
+      - name: decision_precision
+        tests:
+          - dbt_utils.accepted_range: { min_value: 0, max_value: 1 }
+
+  - name: fct_merchant_risk
+    description: Merchant risk profile joined to observed window behaviour.
+    columns:
+      - name: merchant_id
+        tests: [unique, not_null]
+      - name: window_fraud_rate_pct
+        tests:
+          - dbt_utils.accepted_range: { min_value: 0, max_value: 100 }
+
+  - name: fct_customer_risk
+    description: Customer risk profile joined to observed window behaviour.
+    columns:
+      - name: customer_id
+        tests: [unique, not_null]
+
+  - name: fct_fraud_losses
+    description: Loss accounting by day, channel, payment method, country and fraud type.
+    columns:
+      - name: net_loss
+        tests: [not_null]

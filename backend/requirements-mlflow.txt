@@ -1,0 +1,4 @@
+# Optional: experiment tracking. Install alongside requirements.txt when
+# MLFLOW_TRACKING_URI is set. The application degrades cleanly without it --
+# the model_versions table remains the serving source of truth either way.
+mlflow==3.10.1

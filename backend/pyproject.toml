@@ -1,0 +1,40 @@
+[project]
+name = "finguard"
+version = "1.0.0"
+description = "FINGuard - financial intelligence, fraud detection and risk decisioning platform"
+requires-python = ">=3.11"
+
+[tool.black]
+line-length = 100
+target-version = ["py312"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+exclude = ["alembic/versions", ".venv", "artifacts"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "N", "UP", "B", "C4", "SIM", "RUF"]
+ignore = [
+    "E501",   # line length is handled by black
+    "B008",   # FastAPI dependencies are called in defaults by design
+    "N818",   # our error classes read better without an Error suffix everywhere
+    "RUF012", # mutable class attributes are fine on SQLAlchemy models
+    "SIM108", # ternaries are not always clearer than if/else
+    "B905",   # zip(strict=) is not always meaningful for our paired sequences
+    "C416",   # explicit comprehensions over SQLAlchemy scalars read fine
+]
+
+[tool.ruff.lint.per-file-ignores]
+# X / X_train follow the scikit-learn convention for a feature matrix.
+"app/ml/train.py" = ["N803", "N806"]
+"app/services/ml.py" = ["N803", "N806"]
+"tests/*" = ["N802", "N803", "B011", "SIM117"]
+"app/db/models/*" = ["RUF012"]
+
+[tool.mypy]
+python_version = "3.12"
+warn_unused_configs = true
+ignore_missing_imports = true
+no_strict_optional = true
+exclude = ["alembic/", "tests/"]
