@@ -7,58 +7,89 @@ analyst-authored rule engine, a gradient boosted model, graph neighbourhood risk
 and a cost-aware decision policy — then records exactly why it landed where it
 did, and lets an analyst investigate, decide, and feed that verdict back into the
 next model.
+## Quick start
 
+**Requirements:** Python 3.11+, Node 20+. `make` is optional but convenient.
+No extra services are required for the default developer experience — SQLite,
+an in-process cache and an in-process event bus stand in for PostgreSQL,
+Redis and Kafka.
+
+On any platform we recommend using a virtual environment for the backend.
+
+Linux / macOS
+
+```bash
+python -m venv .venv
+source .venv/bin/activate
+cd backend
+pip install -r requirements-dev.txt
+cd ..
+cd frontend
+npm ci
+cd ..
 ```
-Transaction → Validate → Deduplicate → Enrich → Features → Rules → Model → Graph
-            → Ensemble risk → Decision → Alert/Case → Investigation → Feedback → Retraining
+
+Windows (PowerShell)
+
+```powershell
+python -m venv .venv
+.venv\Scripts\Activate.ps1
+Set-Location backend
+pip install -r requirements-dev.txt
+Set-Location ..
+Set-Location frontend
+npm ci
+Set-Location ..
 ```
 
----
+Build the synthetic portfolio, score it and train the first models (~45s):
 
-## Table of contents
+```bash
+cd backend && python -m app.datagen.seed --reset
+```
 
-- [What it does](#what-it-does)
-- [Quick start](#quick-start)
-- [Demo identities](#demo-identities)
-- [Architecture](#architecture)
-- [The decision path](#the-decision-path)
-- [Machine learning](#machine-learning)
-- [Graph intelligence](#graph-intelligence)
-- [AI layer](#ai-layer)
-- [Data platform](#data-platform)
-- [Security and governance](#security-and-governance)
-- [Measured performance](#measured-performance)
-- [Testing](#testing)
-- [Demo scenarios](#demo-scenarios)
-- [Project layout](#project-layout)
-- [Configuration](#configuration)
-- [Docker](#docker)
-- [Deployment](#deployment)
-- [What is real and what is simulated](#what-is-real-and-what-is-simulated)
-- [Future improvements](#future-improvements)
+Run the API (from the repository root or `backend`):
 
----
-
-## What it does
-
-| Question | Where it is answered |
-|---|---|
-| What is happening? | Command centre KPIs, live SSE transaction feed, global risk map |
-| Is it suspicious? | Rule engine + XGBoost classifier + isolation forest + graph risk |
-| Why is it suspicious? | Decision trace with SHAP attributions, rule matches and graph signals |
-| What will happen next? | Volume, fraud and workload forecasts with stated backtest error |
-| What should we do? | Cost-optimised decision engine and the what-if policy simulator |
-| Can an analyst act on it? | Case workspace: timeline, evidence, AI summary, verdict, feedback loop |
-
-**At a glance** (from one `make seed` run of 24,000 transactions):
-
+```bash
 | | |
 |---|---|
 | Database tables | 41, with foreign keys, indexes and Alembic migrations |
 | API endpoints | 105 routes, OpenAPI documented, permission-gated |
 | Features | 35 point-in-time features shared by training and serving |
+
+Run the web app (http://localhost:5173):
+
+```bash
 | Detection rules | 16 shipped rules, editable and back-testable from the UI |
 | Model quality | ROC-AUC **0.98–0.99**, PR-AUC **0.87–0.94**, recall **0.86–0.94** on a held-out chronological window |
+
+Open the UI at <http://localhost:5173/login>, sign in with any
+[demo identity](#demo-identities) and press **Run detection** or a demo scenario
+to watch the pipeline.
+
+Makefile
+
+Most developer workflows are exposed as `make` targets. On Windows you can run
+these in WSL, Git Bash, or execute the equivalent commands shown above.
+
+```bash
+make install    # dependencies
+make seed       # synthetic portfolio + training
+make api        # backend with reload
+make web        # frontend
+make test       # run backend + frontend tests as configured
+make smoke      # endpoint smoke checks against the seeded database
+make bench      # measured latency percentiles
+```
+
+### Generate live traffic
+
+```bash
+cd backend && python -m scripts.stream_producer --rate 5 --duration 120
+```
+
+Transactions are scored through the real decision path and appear immediately in
+the command centre feed, the alert queue and the monitoring dashboards.
 | Decision latency | p50 **14–17 ms**, p95 **16–20 ms** (target p95 500 ms) |
 | Tests | 113 backend, 28 frontend, 92 endpoint smoke checks — all passing |
 
@@ -596,5 +627,6 @@ variables and the real drivers take over with no code change.
 
 *Built as a demonstration of production financial-crime engineering. All
 demonstration data is synthetic.*
-#   F I N G u a r d  
+#   F I N G u a r d 
+ 
  
